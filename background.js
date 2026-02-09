@@ -171,19 +171,35 @@ function urlMatchesDomain(url, pattern) {
   }
 }
 
-chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if (!changeInfo.url) return;
-  if (!_cachedEnabled) return;
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+  const currentUrl = changeInfo.url || tab?.pendingUrl || tab?.url;
+  if (!currentUrl) return;
 
-  const matched = _cachedRules.find(
-    (r) => r.enabled && urlMatchesDomain(changeInfo.url, r.source)
+  // MV3 service workers are ephemeral; refresh cache from storage on each event.
+  // This keeps fallback redirects working even after worker restarts.
+  const {
+    [STORAGE_KEY]: rules = _cachedRules,
+    [ENABLED_KEY]: globalEnabled = _cachedEnabled,
+    [ALLOWLIST_KEY]: allowlist = _cachedAllowlist,
+  } = await chrome.storage.local.get([STORAGE_KEY, ENABLED_KEY, ALLOWLIST_KEY]);
+
+  _cachedRules = rules;
+  _cachedEnabled = globalEnabled;
+  _cachedAllowlist = allowlist;
+
+  if (!globalEnabled) return;
+
+  const matched = rules.find(
+    (r) => r.enabled && urlMatchesDomain(currentUrl, r.source)
   );
   if (!matched) return;
 
-  const allowed = _cachedAllowlist.some((entry) =>
-    urlMatchesDomain(changeInfo.url, entry)
+  const allowed = allowlist.some((entry) =>
+    urlMatchesDomain(currentUrl, entry)
   );
   if (allowed) return;
+
+  if (currentUrl === matched.target) return;
 
   chrome.tabs.update(tabId, { url: matched.target });
 });
