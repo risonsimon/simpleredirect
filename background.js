@@ -4,6 +4,12 @@ const STORAGE_KEY = "redirectRules";
 const ENABLED_KEY = "globalEnabled";
 const ALLOWLIST_KEY = "allowlistRules";
 
+// ── In-memory cache for webNavigation fallback (synchronous access) ──
+
+let _cachedRules = [];
+let _cachedEnabled = true;
+let _cachedAllowlist = [];
+
 // ── Icon state ──
 
 function setIcon(enabled) {
@@ -23,12 +29,35 @@ function setIcon(enabled) {
   });
 }
 
-// ── Convert stored pattern to a urlFilter with || domain anchor ──
+// ── Parse stored pattern into domain + path ──
 
-function toUrlFilter(pattern) {
-  // Strip any protocol prefix — || domain anchor handles all protocols + subdomains
+function parsePattern(pattern) {
   const cleaned = pattern.replace(/^(\*|https?):\/\//, "");
-  return `||${cleaned}`;
+  const slashIdx = cleaned.indexOf("/");
+  if (slashIdx === -1) return { domain: cleaned, path: null };
+  return {
+    domain: cleaned.substring(0, slashIdx),
+    path: cleaned.substring(slashIdx),
+  };
+}
+
+// ── Build a declarativeNetRequest condition from a pattern ──
+
+function buildCondition(pattern) {
+  const { domain, path } = parsePattern(pattern);
+  const condition = { resourceTypes: ["main_frame"] };
+
+  // Use requestDomains for reliable domain matching (handles subdomains too)
+  if (domain) {
+    condition.requestDomains = [domain.replace(/^\*\./, "")];
+  }
+
+  // Only add urlFilter when there's a specific path (not the catch-all /*)
+  if (path && path !== "/*") {
+    condition.urlFilter = path;
+  }
+
+  return condition;
 }
 
 // ── Sync rules to declarativeNetRequest ──
@@ -39,6 +68,11 @@ async function syncRules() {
     [ENABLED_KEY]: globalEnabled = true,
     [ALLOWLIST_KEY]: allowlist = [],
   } = await chrome.storage.local.get([STORAGE_KEY, ENABLED_KEY, ALLOWLIST_KEY]);
+
+  // Update in-memory cache for the webNavigation fallback
+  _cachedRules = rules;
+  _cachedEnabled = globalEnabled;
+  _cachedAllowlist = allowlist;
 
   // Remove all existing dynamic rules first
   const existingRules = await chrome.declarativeNetRequest.getDynamicRules();
@@ -59,10 +93,7 @@ async function syncRules() {
           type: "redirect",
           redirect: { url: rule.target },
         },
-        condition: {
-          urlFilter: toUrlFilter(rule.source),
-          resourceTypes: ["main_frame"],
-        },
+        condition: buildCondition(rule.source),
       });
     });
 
@@ -72,10 +103,7 @@ async function syncRules() {
         id: ruleId++,
         priority: 2,
         action: { type: "allow" },
-        condition: {
-          urlFilter: toUrlFilter(entry),
-          resourceTypes: ["main_frame"],
-        },
+        condition: buildCondition(entry),
       });
     });
   }
@@ -125,3 +153,37 @@ async function init() {
 
 chrome.runtime.onInstalled.addListener(init);
 chrome.runtime.onStartup.addListener(init);
+
+// ── Fallback: catch navigations that bypass declarativeNetRequest ──
+// Sites with Service Workers (e.g. x.com) can serve cached responses
+// without hitting the network, so declarativeNetRequest never fires.
+// tabs.onUpdated still fires when the tab URL changes, no extra permissions needed.
+
+function urlMatchesDomain(url, pattern) {
+  const { domain } = parsePattern(pattern);
+  if (!domain) return false;
+  try {
+    const host = new URL(url).hostname;
+    const clean = domain.replace(/^\*\./, "");
+    return host === clean || host.endsWith("." + clean);
+  } catch {
+    return false;
+  }
+}
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (!changeInfo.url) return;
+  if (!_cachedEnabled) return;
+
+  const matched = _cachedRules.find(
+    (r) => r.enabled && urlMatchesDomain(changeInfo.url, r.source)
+  );
+  if (!matched) return;
+
+  const allowed = _cachedAllowlist.some((entry) =>
+    urlMatchesDomain(changeInfo.url, entry)
+  );
+  if (allowed) return;
+
+  chrome.tabs.update(tabId, { url: matched.target });
+});
