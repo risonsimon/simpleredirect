@@ -104,7 +104,7 @@ body {
   justify-content: center;
   background: var(--text);
   border-radius: var(--radius-md);
-  color: #fff;
+  color: var(--accent);
   flex-shrink: 0;
 }
 

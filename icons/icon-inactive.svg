@@ -1,5 +1,7 @@
 <svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
   <rect width="128" height="128" rx="24" fill="#1a1a1a"/>
-  <rect x="4" y="4" width="120" height="120" rx="20" stroke="#555" stroke-width="3" stroke-opacity="0.3"/>
-  <path d="M40 64h20l-10 28 42-46H72l10-28-42 46z" fill="#666"/>
+  <!-- Redirect arrow (dimmed) -->
+  <path d="M 32 84 H 56 L 96 44" stroke="#666666" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Arrowhead (dimmed) -->
+  <path d="M 82 44 L 96 44 L 96 58" stroke="#666666" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
