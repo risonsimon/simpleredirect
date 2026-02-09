@@ -2,6 +2,7 @@
 
 const STORAGE_KEY = "redirectRules";
 const ENABLED_KEY = "globalEnabled";
+const ALLOWLIST_KEY = "allowlistRules";
 
 // ── Icon state ──
 
@@ -22,51 +23,71 @@ function setIcon(enabled) {
   });
 }
 
-// ── Convert a user pattern (with wildcards) to a declarativeNetRequest regex ──
+// ── Convert stored pattern to a urlFilter with || domain anchor ──
 
-function patternToRegex(pattern) {
-  // Escape regex-special characters except our wildcard *
-  let escaped = pattern.replace(/([.+?^${}()|[\]\\])/g, "\\$1");
-  // Replace * with .*
-  escaped = escaped.replace(/\*/g, ".*");
-  // Anchor it
-  return `^${escaped}$`;
+function toUrlFilter(pattern) {
+  // Strip any protocol prefix — || domain anchor handles all protocols + subdomains
+  const cleaned = pattern.replace(/^(\*|https?):\/\//, "");
+  return `||${cleaned}`;
 }
 
 // ── Sync rules to declarativeNetRequest ──
 
 async function syncRules() {
-  const { [STORAGE_KEY]: rules = [], [ENABLED_KEY]: globalEnabled = true } =
-    await chrome.storage.local.get([STORAGE_KEY, ENABLED_KEY]);
+  const {
+    [STORAGE_KEY]: rules = [],
+    [ENABLED_KEY]: globalEnabled = true,
+    [ALLOWLIST_KEY]: allowlist = [],
+  } = await chrome.storage.local.get([STORAGE_KEY, ENABLED_KEY, ALLOWLIST_KEY]);
 
   // Remove all existing dynamic rules first
   const existingRules = await chrome.declarativeNetRequest.getDynamicRules();
   const removeIds = existingRules.map((r) => r.id);
 
-  // Build new rules — only for enabled rules when global is on
+  // Build new rules — only when global is on
   const addRules = [];
+  let ruleId = 1;
+
   if (globalEnabled) {
-    rules.forEach((rule, index) => {
+    // Redirect rules (priority 1)
+    rules.forEach((rule) => {
       if (!rule.enabled) return;
       addRules.push({
-        id: index + 1,
+        id: ruleId++,
         priority: 1,
         action: {
           type: "redirect",
           redirect: { url: rule.target },
         },
         condition: {
-          regexFilter: patternToRegex(rule.source),
+          urlFilter: toUrlFilter(rule.source),
+          resourceTypes: ["main_frame"],
+        },
+      });
+    });
+
+    // Allowlist rules (priority 2 — higher priority takes precedence)
+    allowlist.forEach((entry) => {
+      addRules.push({
+        id: ruleId++,
+        priority: 2,
+        action: { type: "allow" },
+        condition: {
+          urlFilter: toUrlFilter(entry),
           resourceTypes: ["main_frame"],
         },
       });
     });
   }
 
-  await chrome.declarativeNetRequest.updateDynamicRules({
-    removeRuleIds: removeIds,
-    addRules,
-  });
+  try {
+    await chrome.declarativeNetRequest.updateDynamicRules({
+      removeRuleIds: removeIds,
+      addRules,
+    });
+  } catch (e) {
+    console.error("Failed to update redirect rules:", e);
+  }
 }
 
 // ── Toggle on icon click ──
@@ -77,15 +98,14 @@ chrome.action.onClicked.addListener(async () => {
   );
   const next = !current;
   await chrome.storage.local.set({ [ENABLED_KEY]: next });
-  setIcon(next);
-  await syncRules();
+  // setIcon + syncRules handled by storage.onChanged listener
 });
 
 // ── Re-sync whenever storage changes (options page edits) ──
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
-  if (changes[STORAGE_KEY] || changes[ENABLED_KEY]) {
+  if (changes[STORAGE_KEY] || changes[ENABLED_KEY] || changes[ALLOWLIST_KEY]) {
     syncRules();
     if (changes[ENABLED_KEY]) {
       setIcon(changes[ENABLED_KEY].newValue);
@@ -95,18 +115,13 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 // ── Init on install / startup ──
 
-chrome.runtime.onInstalled.addListener(async () => {
+async function init() {
   const { [ENABLED_KEY]: enabled = true } = await chrome.storage.local.get(
     ENABLED_KEY
   );
   setIcon(enabled);
   await syncRules();
-});
+}
 
-chrome.runtime.onStartup.addListener(async () => {
-  const { [ENABLED_KEY]: enabled = true } = await chrome.storage.local.get(
-    ENABLED_KEY
-  );
-  setIcon(enabled);
-  await syncRules();
-});
+chrome.runtime.onInstalled.addListener(init);
+chrome.runtime.onStartup.addListener(init);

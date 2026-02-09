@@ -5,8 +5,7 @@
   "description": "One job: redirect URLs.",
   "permissions": [
     "storage",
-    "declarativeNetRequest",
-    "declarativeNetRequestFeedback"
+    "declarativeNetRequest"
   ],
   "host_permissions": ["<all_urls>"],
   "background": {

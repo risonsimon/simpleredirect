@@ -4,12 +4,6 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Simple Redirect — Settings</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link
-    href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=DM+Sans:wght@400;500;600;700&display=swap"
-    rel="stylesheet"
-  />
   <link rel="stylesheet" href="options.css" />
 </head>
 <body>
@@ -51,7 +45,7 @@
           <input
             type="text"
             id="sourceInput"
-            placeholder="https://example.com/* or *://reddit.com/*"
+            placeholder="youtube.com/* or reddit.com/r/all"
             spellcheck="false"
             autocomplete="off"
           />
@@ -66,7 +60,7 @@
           <input
             type="text"
             id="targetInput"
-            placeholder="https://other-site.com"
+            placeholder="read.readwise.io"
             spellcheck="false"
             autocomplete="off"
           />
@@ -78,7 +72,7 @@
           Add
         </button>
       </form>
-      <p class="hint">Use <code>*</code> as wildcard. Example: <code>*://news.ycombinator.com/*</code></p>
+      <p class="hint">Use <code>*</code> as wildcard. Matches all subdomains. Example: <code>youtube.com/*</code> matches www.youtube.com too.</p>
     </section>
 
     <!-- ── Rules List ── -->
@@ -99,6 +93,37 @@
         </div>
         <p>No redirects yet</p>
         <span>Add your first rule above to get started.</span>
+      </div>
+    </section>
+
+    <!-- ── Allowlist ── -->
+    <section class="allowlist-section">
+      <div class="allowlist-header">
+        <div class="section-label">Allowlist</div>
+        <span class="allowlist-count" id="allowlistCount">0 entries</span>
+      </div>
+      <p class="allowlist-desc">URLs that bypass redirects. Useful for exempting specific subdomains.</p>
+      <form class="allowlist-form" id="allowlistForm">
+        <input
+          type="text"
+          id="allowlistInput"
+          placeholder="music.youtube.com/*"
+          spellcheck="false"
+          autocomplete="off"
+        />
+        <button type="submit" class="btn-allowlist-add">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+            <path d="M9 3v12M3 9h12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+          Add
+        </button>
+      </form>
+      <div class="allowlist-list" id="allowlistList">
+        <!-- populated by JS -->
+      </div>
+      <div class="allowlist-empty" id="allowlistEmpty">
+        <p>No allowlist entries</p>
+        <span>Add URLs here to exempt them from redirects.</span>
       </div>
     </section>
 
