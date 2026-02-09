@@ -3,12 +3,26 @@
 const STORAGE_KEY = "redirectRules";
 const ENABLED_KEY = "globalEnabled";
 const ALLOWLIST_KEY = "allowlistRules";
+const PAUSE_RULE_ID = 1_000_000;
 
 // ── In-memory cache for webNavigation fallback (synchronous access) ──
 
 let _cachedRules = [];
 let _cachedEnabled = true;
 let _cachedAllowlist = [];
+
+// Prime cache as soon as the worker starts so toolbar clicks have current state.
+const _cacheReady = chrome.storage.local
+  .get([STORAGE_KEY, ENABLED_KEY, ALLOWLIST_KEY])
+  .then((data) => {
+    _cachedRules = data[STORAGE_KEY] || [];
+    _cachedEnabled = data[ENABLED_KEY] ?? true;
+    _cachedAllowlist = data[ALLOWLIST_KEY] || [];
+    setIcon(_cachedEnabled);
+  })
+  .catch((e) => {
+    console.error("Failed to prime cache:", e);
+  });
 
 // ── Icon state ──
 
@@ -62,49 +76,72 @@ function buildCondition(pattern) {
 
 // ── Sync rules to declarativeNetRequest ──
 
-async function syncRules() {
+let _syncRulesPromise = Promise.resolve();
+
+function enqueueRuleSync(task) {
+  // Prevent overlapping updateDynamicRules calls (can throw duplicate id errors).
+  _syncRulesPromise = _syncRulesPromise.catch(() => {}).then(task);
+  return _syncRulesPromise;
+}
+
+function syncRules() {
+  return enqueueRuleSync(syncRulesNow);
+}
+
+async function syncRulesNow() {
+  await _cacheReady;
   const {
     [STORAGE_KEY]: rules = [],
-    [ENABLED_KEY]: globalEnabled = true,
     [ALLOWLIST_KEY]: allowlist = [],
-  } = await chrome.storage.local.get([STORAGE_KEY, ENABLED_KEY, ALLOWLIST_KEY]);
+  } = await chrome.storage.local.get([STORAGE_KEY, ALLOWLIST_KEY]);
+  const globalEnabled = _cachedEnabled;
 
   // Update in-memory cache for the webNavigation fallback
   _cachedRules = rules;
-  _cachedEnabled = globalEnabled;
   _cachedAllowlist = allowlist;
 
   // Remove all existing dynamic rules first
   const existingRules = await chrome.declarativeNetRequest.getDynamicRules();
   const removeIds = existingRules.map((r) => r.id);
 
-  // Build new rules — only when global is on
+  // Build base rules from current options state.
   const addRules = [];
   let ruleId = 1;
 
-  if (globalEnabled) {
-    // Redirect rules (priority 1)
-    rules.forEach((rule) => {
-      if (!rule.enabled) return;
-      addRules.push({
-        id: ruleId++,
-        priority: 1,
-        action: {
-          type: "redirect",
-          redirect: { url: rule.target },
-        },
-        condition: buildCondition(rule.source),
-      });
+  // Redirect rules (priority 1)
+  rules.forEach((rule) => {
+    if (!rule.enabled) return;
+    addRules.push({
+      id: ruleId++,
+      priority: 1,
+      action: {
+        type: "redirect",
+        redirect: { url: rule.target },
+      },
+      condition: buildCondition(rule.source),
     });
+  });
 
-    // Allowlist rules (priority 2 — higher priority takes precedence)
-    allowlist.forEach((entry) => {
-      addRules.push({
-        id: ruleId++,
-        priority: 2,
-        action: { type: "allow" },
-        condition: buildCondition(entry),
-      });
+  // Allowlist rules (priority 2 — higher priority takes precedence)
+  allowlist.forEach((entry) => {
+    addRules.push({
+      id: ruleId++,
+      priority: 2,
+      action: { type: "allow" },
+      condition: buildCondition(entry),
+    });
+  });
+
+  // Global pause is a single high-priority allow rule.
+  if (!globalEnabled) {
+    addRules.push({
+      id: PAUSE_RULE_ID,
+      priority: 10_000,
+      action: { type: "allow" },
+      condition: {
+        resourceTypes: ["main_frame"],
+        regexFilter: "^https?://.*",
+      },
     });
   }
 
@@ -121,33 +158,44 @@ async function syncRules() {
 // ── Toggle on icon click ──
 
 chrome.action.onClicked.addListener(async () => {
-  const { [ENABLED_KEY]: current = true } = await chrome.storage.local.get(
-    ENABLED_KEY
-  );
-  const next = !current;
+  await _cacheReady;
+  const next = !_cachedEnabled;
+
+  // Optimistic update for instant UI and immediate fallback behavior.
+  _cachedEnabled = next;
+  setIcon(next);
+
   await chrome.storage.local.set({ [ENABLED_KEY]: next });
-  // setIcon + syncRules handled by storage.onChanged listener
+  syncRules();
 });
 
 // ── Re-sync whenever storage changes (options page edits) ──
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
-  if (changes[STORAGE_KEY] || changes[ENABLED_KEY] || changes[ALLOWLIST_KEY]) {
+  if (changes[STORAGE_KEY] || changes[ALLOWLIST_KEY]) {
     syncRules();
-    if (changes[ENABLED_KEY]) {
-      setIcon(changes[ENABLED_KEY].newValue);
+  }
+  if (changes[ENABLED_KEY]) {
+    const enabled = changes[ENABLED_KEY].newValue ?? true;
+    // Skip self-triggered changes from the toggle click handler.
+    if (enabled !== _cachedEnabled) {
+      _cachedEnabled = enabled;
+      setIcon(enabled);
+      syncRules();
     }
   }
 });
 
 // ── Init on install / startup ──
 
+let _initDone = false;
+
 async function init() {
-  const { [ENABLED_KEY]: enabled = true } = await chrome.storage.local.get(
-    ENABLED_KEY
-  );
-  setIcon(enabled);
+  if (_initDone) return;
+  _initDone = true;
+  await _cacheReady;
+  setIcon(_cachedEnabled);
   await syncRules();
 }
 
@@ -175,17 +223,12 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   const currentUrl = changeInfo.url || tab?.pendingUrl || tab?.url;
   if (!currentUrl) return;
 
-  // MV3 service workers are ephemeral; refresh cache from storage on each event.
-  // This keeps fallback redirects working even after worker restarts.
-  const {
-    [STORAGE_KEY]: rules = _cachedRules,
-    [ENABLED_KEY]: globalEnabled = _cachedEnabled,
-    [ALLOWLIST_KEY]: allowlist = _cachedAllowlist,
-  } = await chrome.storage.local.get([STORAGE_KEY, ENABLED_KEY, ALLOWLIST_KEY]);
-
-  _cachedRules = rules;
-  _cachedEnabled = globalEnabled;
-  _cachedAllowlist = allowlist;
+  // Use in-memory state for deterministic toggles.
+  // Cache is hydrated on worker start and kept in sync via storage.onChanged.
+  await _cacheReady;
+  const rules = _cachedRules;
+  const globalEnabled = _cachedEnabled;
+  const allowlist = _cachedAllowlist;
 
   if (!globalEnabled) return;
 
