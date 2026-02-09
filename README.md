@@ -2,11 +2,12 @@
 
 A Chrome extension that does one job: redirect URLs.
 
-Set up rules to automatically redirect from one site to another. For example, redirect `reddit.com` to `old.reddit.com`, or `youtube.com` to `read.readwise.io`.
+Set up rules to automatically redirect from one site to another. For example, redirect `reddit.com/*` to `all.reddit.com/*` (keeps path and query), or `youtube.com` to `read.readwise.io`.
 
 ## Features
 
 - Wildcard pattern matching (`youtube.com/*` matches all subdomains too)
+- Optional path passthrough (`source/* -> target/*` keeps the original path + query)
 - Allowlist specific URLs so they bypass redirects (e.g., keep `music.youtube.com` working while redirecting the rest)
 - Toggle all redirects on/off by clicking the toolbar icon
 - Toggle individual rules on/off

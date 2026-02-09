@@ -188,9 +188,12 @@ function wouldLoop(source, target) {
   try {
     const url = new URL(target);
     const host = url.hostname.replace(/^www\./, "");
-    const patternHost = source.split("/")[0].replace(/^www\./, "");
-    // Check if the target domain matches the source pattern domain
-    if (host === patternHost || host.endsWith(`.${patternHost}`)) return true;
+    const patternHost = source
+      .split("/")[0]
+      .replace(/^\*\./, "")
+      .replace(/^www\./, "");
+    // Only block exact same-host redirects. Subdomain targets are allowed.
+    if (host === patternHost) return true;
   } catch { /* ignore */ }
   return false;
 }

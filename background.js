@@ -55,6 +55,72 @@ function parsePattern(pattern) {
   };
 }
 
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function targetUsesPathPassthrough(target) {
+  return target.endsWith("/*");
+}
+
+function getPassthroughTargetBase(target) {
+  if (!targetUsesPathPassthrough(target)) return target;
+  const withoutWildcard = target.slice(0, -2); // remove trailing "*"
+  return withoutWildcard.endsWith("/")
+    ? withoutWildcard.slice(0, -1)
+    : withoutWildcard;
+}
+
+function buildSourcePathRegex(path) {
+  // Empty or catch-all source path: preserve full source path + query.
+  if (!path || path === "/*") {
+    return "(/.*)?";
+  }
+
+  const wildcardPath = escapeRegex(path).replace(/\\\*/g, ".*");
+  // For exact paths, still allow URL query strings.
+  if (!path.includes("*")) {
+    return `(${wildcardPath}(?:\\?.*)?)`;
+  }
+  return `(${wildcardPath})`;
+}
+
+function buildRegexCondition(pattern) {
+  const { domain, path } = parsePattern(pattern);
+  if (!domain) return null;
+
+  const cleanDomain = domain.replace(/^\*\./, "");
+  const domainRegex = `(?:[^./]+\\.)*${escapeRegex(cleanDomain)}`;
+  const pathRegex = buildSourcePathRegex(path);
+
+  return {
+    resourceTypes: ["main_frame"],
+    regexFilter: `^https?://${domainRegex}(?::\\d+)?${pathRegex}$`,
+  };
+}
+
+function resolveRedirectTarget(currentUrl, configuredTarget) {
+  if (!targetUsesPathPassthrough(configuredTarget)) {
+    return configuredTarget;
+  }
+
+  try {
+    const sourceUrl = new URL(currentUrl);
+    const targetBaseUrl = new URL(getPassthroughTargetBase(configuredTarget));
+    const prefix =
+      targetBaseUrl.pathname === "/"
+        ? ""
+        : targetBaseUrl.pathname.replace(/\/$/, "");
+
+    targetBaseUrl.pathname = `${prefix}${sourceUrl.pathname}`;
+    targetBaseUrl.search = sourceUrl.search;
+    targetBaseUrl.hash = "";
+    return targetBaseUrl.toString();
+  } catch {
+    return configuredTarget;
+  }
+}
+
 // ── Build a declarativeNetRequest condition from a pattern ──
 
 function buildCondition(pattern) {
@@ -72,6 +138,35 @@ function buildCondition(pattern) {
   }
 
   return condition;
+}
+
+function buildRedirectRule(rule, id) {
+  if (targetUsesPathPassthrough(rule.target)) {
+    const regexCondition = buildRegexCondition(rule.source);
+    if (!regexCondition) return null;
+
+    return {
+      id,
+      priority: 1,
+      action: {
+        type: "redirect",
+        redirect: {
+          regexSubstitution: `${getPassthroughTargetBase(rule.target)}\\1`,
+        },
+      },
+      condition: regexCondition,
+    };
+  }
+
+  return {
+    id,
+    priority: 1,
+    action: {
+      type: "redirect",
+      redirect: { url: rule.target },
+    },
+    condition: buildCondition(rule.source),
+  };
 }
 
 // ── Sync rules to declarativeNetRequest ──
@@ -111,15 +206,8 @@ async function syncRulesNow() {
   // Redirect rules (priority 1)
   rules.forEach((rule) => {
     if (!rule.enabled) return;
-    addRules.push({
-      id: ruleId++,
-      priority: 1,
-      action: {
-        type: "redirect",
-        redirect: { url: rule.target },
-      },
-      condition: buildCondition(rule.source),
-    });
+    const dnrRule = buildRedirectRule(rule, ruleId++);
+    if (dnrRule) addRules.push(dnrRule);
   });
 
   // Allowlist rules (priority 2 — higher priority takes precedence)
@@ -208,12 +296,22 @@ chrome.runtime.onStartup.addListener(init);
 // tabs.onUpdated still fires when the tab URL changes, no extra permissions needed.
 
 function urlMatchesDomain(url, pattern) {
-  const { domain } = parsePattern(pattern);
+  const { domain, path } = parsePattern(pattern);
   if (!domain) return false;
   try {
-    const host = new URL(url).hostname;
+    const parsedUrl = new URL(url);
+    const host = parsedUrl.hostname;
     const clean = domain.replace(/^\*\./, "");
-    return host === clean || host.endsWith("." + clean);
+    const hostMatches = host === clean || host.endsWith("." + clean);
+    if (!hostMatches) return false;
+
+    if (!path || path === "/*") return true;
+    const fullPath = parsedUrl.pathname + parsedUrl.search;
+    const wildcardPath = "^" + escapeRegex(path).replace(/\\\*/g, ".*");
+    const pathRegex = path.includes("*")
+      ? new RegExp(`${wildcardPath}$`)
+      : new RegExp(`${wildcardPath}(?:\\?.*)?$`);
+    return pathRegex.test(fullPath);
   } catch {
     return false;
   }
@@ -242,7 +340,8 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   );
   if (allowed) return;
 
-  if (currentUrl === matched.target) return;
+  const resolvedTarget = resolveRedirectTarget(currentUrl, matched.target);
+  if (currentUrl === resolvedTarget) return;
 
-  chrome.tabs.update(tabId, { url: matched.target });
+  chrome.tabs.update(tabId, { url: resolvedTarget });
 });
