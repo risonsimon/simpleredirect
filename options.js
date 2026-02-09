@@ -66,6 +66,20 @@ async function saveAllowlist(list) {
   await chrome.storage.local.set({ [ALLOWLIST_KEY]: list });
 }
 
+async function refreshFromStorage() {
+  const data = await chrome.storage.local.get([
+    STORAGE_KEY,
+    ENABLED_KEY,
+    ALLOWLIST_KEY,
+  ]);
+  _rules = data[STORAGE_KEY] || [];
+  _enabled = data[ENABLED_KEY] ?? true;
+  _allowlist = data[ALLOWLIST_KEY] || [];
+  renderRules(_rules);
+  renderGlobalToggle(_enabled);
+  renderAllowlist(_allowlist);
+}
+
 // ── Render ──
 
 function renderGlobalToggle(enabled) {
@@ -372,14 +386,32 @@ $allowlistList.addEventListener("click", async (e) => {
   }
 });
 
+// Keep options page in sync when toggled from toolbar action
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local") return;
+  if (changes[STORAGE_KEY]) {
+    _rules = changes[STORAGE_KEY].newValue || [];
+    renderRules(_rules);
+  }
+  if (changes[ENABLED_KEY]) {
+    _enabled = changes[ENABLED_KEY].newValue ?? true;
+    renderGlobalToggle(_enabled);
+  }
+  if (changes[ALLOWLIST_KEY]) {
+    _allowlist = changes[ALLOWLIST_KEY].newValue || [];
+    renderAllowlist(_allowlist);
+  }
+});
+
+// If the tab is resumed later, pull latest state once.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") {
+    refreshFromStorage();
+  }
+});
+
 // ── Init ──
 
 (async () => {
-  const data = await chrome.storage.local.get([STORAGE_KEY, ENABLED_KEY, ALLOWLIST_KEY]);
-  _rules = data[STORAGE_KEY] || [];
-  _enabled = data[ENABLED_KEY] ?? true;
-  _allowlist = data[ALLOWLIST_KEY] || [];
-  renderRules(_rules);
-  renderGlobalToggle(_enabled);
-  renderAllowlist(_allowlist);
+  await refreshFromStorage();
 })();
