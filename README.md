@@ -13,6 +13,8 @@ Set up rules to automatically redirect from one site to another. For example, re
 - Toggle individual rules on/off
 - Edit rules inline from the settings page
 
+![Simple Redirect app screenshot](screenshot.png)
+
 ## Install
 
 1. Clone this repo
